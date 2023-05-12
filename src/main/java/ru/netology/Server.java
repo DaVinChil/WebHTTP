@@ -1,23 +1,21 @@
 package ru.netology;
 
-import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 public class Server {
+
+    public static final String GET = "GET";
+    public static final String POST = "POST";
     private int port;
     private ExecutorService threadPool;
     private HashMap<String, HashMap<String, Handler>> handlers = new HashMap<>();
-    final List<String> validPaths = List.of("/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css", "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js");
+    final List<String> validPaths = List.of("/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css", "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js", "/");
 
     public void listen(int port) {
         this.port = port;
@@ -62,58 +60,113 @@ public class Server {
             out.flush();
         }
 
-        private Request buildRequest(BufferedReader in) throws IOException {
-            final var requestLine = in.readLine();
-            final var parts = requestLine.split(" ");
+        private static void badRequest(BufferedOutputStream out) throws IOException {
+            out.write((
+                    "HTTP/1.1 400 Bad Request\r\n" +
+                            "Content-Length: 0\r\n" +
+                            "Connection: close\r\n" +
+                            "\r\n"
+            ).getBytes());
+            out.flush();
+        }
 
-            if (parts.length == 3) {
-                var requestBuilder = Request.newBuilder();
-                requestBuilder.setMethod(parts[0]).setPath(parts[1]);
+        private static Optional<String> extractHeader(List<String> headers, String header) {
+            return headers.stream()
+                    .filter(o -> o.startsWith(header))
+                    .map(o -> o.substring(o.indexOf(" ")))
+                    .map(String::trim)
+                    .findFirst();
+        }
 
-                int bodySize = 0;
-                String headerLine = in.readLine();
-                while (headerLine.length() > 0) {
-                    int headerEnd = headerLine.indexOf(':');
-                    String header = headerLine.substring(0, headerEnd);
-                    String value = headerLine.substring(headerEnd + 1);
-                    if(header.equals("Content-length")){
-                        bodySize = Integer.valueOf(value);
+        // from Google guava with modifications
+        private static int indexOf(byte[] array, byte[] target, int start, int max) {
+            outer:
+            for (int i = start; i < max - target.length + 1; i++) {
+                for (int j = 0; j < target.length; j++) {
+                    if (array[i + j] != target[j]) {
+                        continue outer;
                     }
-                    requestBuilder.addHeader(header, value);
-                    headerLine = in.readLine();
                 }
+                return i;
+            }
+            return -1;
+        }
 
-                if(bodySize > 0){
-                    StringBuilder bodyBuilder = new StringBuilder();
-                    for(int i = 0; i < bodySize; i++){
-                        bodyBuilder.append((char) in.read());
-                    }
+        private Request buildRequest(BufferedInputStream in) throws IOException {
+            int limit = 4096;
+            var reqBuilder = Request.newBuilder();
 
-                    requestBuilder.setBody(bodyBuilder.toString());
-                }
+            final var buffer = new byte[limit];
+            final var read = in.read(buffer);
 
-                return requestBuilder.build();
+            // ищем request line
+            final var requestLineDelimiter = new byte[]{'\r', '\n'};
+            final var requestLineEnd = indexOf(buffer, requestLineDelimiter, 0, read);
+            if (requestLineEnd == -1) {
+                return null;
             }
 
-            return null;
+            // читаем request line
+            final var requestLine = new String(Arrays.copyOf(buffer, requestLineEnd)).split(" ");
+            if (requestLine.length != 3) {
+                return null;
+            }
+
+            reqBuilder.setMethod(requestLine[0]).setPath(requestLine[1]);
+
+            // ищем заголовки
+            final var headersDelimiter = new byte[]{'\r', '\n', '\r', '\n'};
+            final var headersStart = requestLineEnd + requestLineDelimiter.length;
+            final var headersEnd = indexOf(buffer, headersDelimiter, headersStart, read);
+            if (headersEnd == -1) {
+                return null;
+            }
+
+            in.reset();
+            in.skip(headersStart);
+
+            final var headersBytes = in.readNBytes(headersEnd - headersStart);
+            final var headers = Arrays.asList(new String(headersBytes).split("\r\n"));
+
+            reqBuilder.addHeaders(headers);
+
+            // для GET тела нет
+            if (!reqBuilder.getMethod().equals(GET)) {
+                in.skip(headersDelimiter.length);
+                // вычитываем Content-Length, чтобы прочитать body
+                final var contentLength = extractHeader(headers, "Content-Length");
+                if (contentLength.isPresent()) {
+                    final var length = Integer.parseInt(contentLength.get());
+                    final var bodyBytes = in.readNBytes(length);
+
+                    final var body = new String(bodyBytes);
+                    reqBuilder.setBody(body);
+                }
+            }
+
+            return reqBuilder.build();
         }
 
         @Override
         public void run() {
+            int limit = 4096;
+
             try (
-                    final var in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+                    final var in = new BufferedInputStream(client.getInputStream());
                     final var out = new BufferedOutputStream(client.getOutputStream())
             ) {
+                in.mark(limit);
                 var request = buildRequest(in);
 
-                if(request == null) {
+                if (request == null) {
+                    badRequest(out);
                     return;
                 }
 
                 try {
                     var methodHandlers = handlers.get(request.getMethod());
                     methodHandlers.get(request.getPath()).handle(request, out);
-                } catch (Exception e){
+                } catch (Exception e) {
                     sendError404(out);
                 }
 
