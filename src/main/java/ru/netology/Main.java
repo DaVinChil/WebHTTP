@@ -8,6 +8,15 @@ public class Main {
     public static void main(String[] args) {
         final var server = new Server();
 
+        server.addHandler("POST", "/", (request, out) -> {
+            out.write((
+                    "HTTP/1.1 200 OK\r\n" +
+                            "Connection: close\r\n" +
+                            "\r\n"
+            ).getBytes());
+            out.flush();
+        });
+
         server.addHandler("GET", "/classic.html", (request, out) -> {
             final var filePath = Path.of(".", "public", request.getPath());
             final var mimeType = Files.probeContentType(filePath);
