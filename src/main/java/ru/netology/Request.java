@@ -152,18 +152,12 @@ public class Request {
             }
         }
 
-        public void parseBodyMultipart(){
-
-        }
-
         public void setBody(String body) {
             Request.this.body = body;
             String contentType = getHeader(CONTENT_TYPE);
             if (contentType != null) {
                 if(contentType.equals(URLENCODED)){
                     parseBodyUrlencoded();
-                } else if(contentType.equals(MULTIPART)){
-                    parseBodyMultipart();
                 }
             }
         }
